@@ -38,7 +38,7 @@ class Cryomodule:
 
         # Give each cryomodule 8 cavities
         self.cavities = {i: self.Cavity(parent=self, cavNumber=i)
-                         for i in xrange(1, 9)}
+                         for i in range(1, 9)}
 
     # Returns a list of the PVs used for its data acquisition, including
     # the PV of the cavity heater used for calibration
@@ -47,11 +47,13 @@ class Cryomodule:
                 self.cavities[self.calCavNum].heaterPV]
 
     class Cavity:
-        def __init__(self, parent, cavNumber, q0MeasFileName=""):
+        def __init__(self, parent, cavNumber):
             self.parent = parent
 
             self.cavityNumber = cavNumber
-            self.dataFileName = q0MeasFileName
+            self.dataFileName = None
+
+            self.refGradientVal = None
 
             heaterPVStr = "CHTR:CM0{cryModNum}:1{cavNum}55:HV:POWER"
             self.heaterPV = heaterPVStr.format(cryModNum=parent.cryModNumJLAB,
@@ -84,7 +86,7 @@ class Cryomodule:
         # instead of the heater one
         def getPVs(self):
             return [self.parent.valvePV, self.parent.dsLevelPV,
-                    self.parent.usLevelPV, self.gradientPV]
+                    self.parent.usLevelPV, self.gradientPV, self.heaterPV]
 
         # The @property annotation is effectively a shortcut for defining a
         # class variable and giving it a custom getter function (so now
@@ -101,6 +103,10 @@ class Cryomodule:
         @property
         def cryModNumSLAC(self):
             return self.parent.cryModNumSLAC
+
+        @property
+        def cryModNumJLAB(self):
+            return self.parent.cryModNumJLAB
 
 
 def main():
