@@ -7,7 +7,6 @@
 from __future__ import division
 from __future__ import print_function
 from datetime import datetime, timedelta
-
 from csv import reader, writer
 from subprocess import check_output, CalledProcessError
 from re import compile, findall
@@ -22,19 +21,22 @@ from json import dumps
 from time import sleep
 from cryomodule import Cryomodule
 
-# The LL readings get wonky when the upstream liquid level dips below 66, and
-# when the  valve position is +/- 1.2 from our locked position (found
-# empirically)
-VALVE_POSITION_TOLERANCE = 1.2
+# The LL readings get wonky when the upstream liquid level dips below 66
 UPSTREAM_LL_LOWER_LIMIT = 66
 
+# Used to reject data where the JT valve wasn't at the correct position
+VALVE_POSITION_TOLERANCE = 2
+
+# Used to reject data where the cavity gradient wasn't at the correct value
 GRADIENT_TOLERANCE = 0.7
 
+# We fetch data from the JLab archiver with a program called mySampler, which
+# samples the chosen PVs at a user-specified time interval
 SAMPLING_INTERVAL = 1
 
-# The minimum run length was also found empirically (it's long enough to ensure
-# the runs it detects are usable data and not just noise)
-RUN_LENGTH_LOWER_LIMIT = 500 / SAMPLING_INTERVAL
+# The minimum run length was empirically found to be ~750 (long enough to
+# ensure the runs we detect are usable data and not just noise)
+RUN_LENGTH_LOWER_LIMIT = 750 / SAMPLING_INTERVAL
 
 # Set True to use a known data set for debugging and/or demoing
 # Set False to prompt the user for real data
@@ -45,6 +47,7 @@ IS_DEMO = True
 if hasattr(__builtins__, 'raw_input'):
     input = raw_input
 
+# Used in custom input functions just below
 ERROR_MESSAGE = "Please provide valid input"
 
 
@@ -57,6 +60,8 @@ def getNumericalInput(prompt, lowLim, highLim, inputType):
 
     while response < lowLim or response > highLim:
         stderr.write(ERROR_MESSAGE + "\n")
+        # Need to pause briefly for some reason to make sure the error message
+        # shows up before the next prompt
         sleep(0.01)
         response = get_input(prompt, inputType)
 
@@ -106,22 +111,6 @@ def findDataFiles(prefix):
 
     fileDict[numFiles] = "Generate a new CSV"
     return fileDict
-
-
-def addFileToCavity(cavity):
-    print("\n*** Now we'll start building a Q0 measurement file " +
-          "- please be patient ***\n")
-
-    startTimeQ0Meas = buildDatetimeFromInput("Start time for the data run:")
-
-    upperLimit = (datetime.now() - startTimeQ0Meas).total_seconds() / 3600
-
-    duration = get_float_lim("Duration of data run in hours: ",
-                             RUN_LENGTH_LOWER_LIMIT / 3600, upperLimit)
-
-    endTimeCalib = startTimeQ0Meas + timedelta(hours=duration)
-
-    cavity.dataFileName = generateCSV(startTimeQ0Meas, endTimeCalib, cavity)
 
 
 def buildCryModObj(cryomoduleSLAC, cryomoduleLERF, valveLockedPos,
@@ -292,13 +281,16 @@ def parseDataFromCSV(obj):
             # instead of RF, so we use the heater PV to parse the calibration
             # data using the different heater settings
             heaterPV = obj.cavities[obj.calCavNum].heaterPV
-            linkBufferToPV(heaterPV, obj.heatLoadBuffer, columnDict, header)
+            linkBufferToPV(heaterPV, obj.heaterBuffer, columnDict, header)
 
         try:
+            # Data fetched from the JLab archiver has the timestamp column
+            # labeled "Date"
             timeIdx = header.index("Date")
             datetimeFormatStr = "%Y-%m-%d-%H:%M:%S"
 
         except ValueError:
+            # Data exported from MyaPlot has the timestamp column labeled "time"
             timeIdx = header.index("time")
             datetimeFormatStr = "%Y-%m-%d %H:%M:%S"
 
@@ -310,7 +302,7 @@ def parseDataFromCSV(obj):
             # TODO use this to make the plots more human-friendly
             obj.timeBuffer.append(dt)
 
-            # We use the unix time to make the math easier during data
+            # We use the Unix time to make the math easier during data
             # processing
             obj.unixTimeBuffer.append((dt - timeZero).total_seconds())
 
@@ -331,18 +323,22 @@ def linkBufferToPV(pv, dataBuffer, columnDict, header):
 
 # @param obj: either a Cryomodule or Cavity object
 def processData(obj):
-    parseDataFromCSV(obj)
 
-    runs, timeRuns, heatLoads = populateRuns(obj)
-    adjustForHeaterSettle(heatLoads, runs, timeRuns)
+    parseDataFromCSV(obj)
+    populateRuns(obj)
+    adjustForHeaterSettle(obj)
 
     if IS_DEMO:
-        print("Heat Loads: " + str(heatLoads))
+        for idx, (startIdx, endIdx) in enumerate(obj.runIndices):
+            startTime = obj.unixTimeBuffer[startIdx]
+            endTime = obj.unixTimeBuffer[endIdx]
+            runStr = "Duration of run {runNum}: {duration}"
+            print(runStr.format(runNum=idx + 1,
+                                duration=(endTime - startTime) / 60.0))
+            heatStr = "Electric heat Load: {heat}"
+            print(heatStr.format(heat=obj.runElecHeatLoads[idx]))
 
-        for timeRun in timeRuns:
-            print("Duration of run: " + str((timeRun[-1] - timeRun[0]) / 60.0))
-
-    return plotAndFitData(heatLoads, runs, timeRuns, obj)
+    return plotAndFitData(obj)
 
 
 ################################################################################
@@ -353,13 +349,17 @@ def processData(obj):
 ################################################################################
 def populateRuns(obj):
 
-    def getCryModEndRunCondition(idx, val, prevHeaterSetting):
-        heaterChanged = (val != prevHeaterSetting)
+    # noinspection PyShadowingNames
+    def getRunEndCondition(idx, heaterVal):
+        # Find inflection points for the desired heater setting
+        prevHeaterVal = obj.heaterBuffer[idx - 1] if idx > 0 else heaterVal
+
+        heaterChanged = (heaterVal != prevHeaterVal)
         liqLevelTooLow = (obj.upstreamLevelBuffer[idx]
                           < UPSTREAM_LL_LOWER_LIMIT)
         valveOutsideTol = (abs(obj.valvePosBuffer[idx] - obj.refValvePos)
                            > VALVE_POSITION_TOLERANCE)
-        isLastElement = (idx == len(obj.heatLoadBuffer) - 1)
+        isLastElement = (idx == len(obj.heaterBuffer) - 1)
 
         # A "break" condition defining the end of a run if the desired heater
         # value changed, or if the upstream liquid level dipped below the
@@ -367,49 +367,34 @@ def populateRuns(obj):
         # we reached the end (which is a kinda jank way of "flushing" the last
         # run)
         return (heaterChanged or liqLevelTooLow or valveOutsideTol
-                          or isLastElement)
+                or isLastElement)
 
+    # noinspection PyShadowingNames
+    def checkAndFlushRun(endRunCondition, idx, runStartIdx):
+        if endRunCondition:
+            # Keeping only those runs with at least <cutoff> points
+            if idx - runStartIdx > RUN_LENGTH_LOWER_LIMIT:
+
+                obj.runIndices.append([runStartIdx, idx - 1])
+                obj.runElecHeatLoads.append(obj.heaterBuffer[idx - 1]
+                                            - obj.refHeaterVal)
+            return idx
+
+        return runStartIdx
 
     isCryomodule = isinstance(obj, Cryomodule)
 
     runStartIdx = 0
 
-    runs = []
-    timeRuns = []
-    heatLoads = []
-
-    def checkAndFlushRun(endRunCondition, idx,
-                         prevHeaterSetting, runStartIdx,):
-        if (endRunCondition):
-            # Keeping only those runs with at least <cutoff> points
-            if idx - runStartIdx > RUN_LENGTH_LOWER_LIMIT:
-                heatLoads.append(prevHeaterSetting - obj.refHeaterVal)
-
-                for (runBuffer, dataBuffer) in [(runs,
-                                                 obj.downstreamLevelBuffer),
-                                                (timeRuns, obj.unixTimeBuffer)]:
-                    runBuffer.append(dataBuffer[runStartIdx: idx])
-            return idx
-
-        return runStartIdx
-
-    def getPrevHeatAndEndCond(idx, val):
-        # Find inflection points for the desired heater setting
-        prevHeatSetting = obj.heatLoadBuffer[idx - 1] if idx > 0 else val
-
-        endOfCryModRun = getCryModEndRunCondition(idx, val, prevHeatSetting)
-        return (prevHeatSetting, endOfCryModRun)
-
     if isCryomodule:
-        for idx, val in enumerate(obj.heatLoadBuffer):
-            prevHeaterSetting, endOfCryModRun = getPrevHeatAndEndCond(idx, val)
+        for idx, heaterVal in enumerate(obj.heaterBuffer):
+            endOfCryModRun = getRunEndCondition(idx, heaterVal)
 
-            runStartIdx = checkAndFlushRun(endOfCryModRun, idx,
-                                           prevHeaterSetting, runStartIdx)
+            runStartIdx = checkAndFlushRun(endOfCryModRun, idx, runStartIdx)
 
     else:
-        for idx, val in enumerate(obj.heatLoadBuffer):
-            prevHeaterSetting, endOfCryModRun = getPrevHeatAndEndCond(idx, val)
+        for idx, heaterVal in enumerate(obj.heaterBuffer):
+            endOfCryModRun = getRunEndCondition(idx, heaterVal)
 
             try:
                 gradientChanged = (abs(obj.gradientBuffer[idx]
@@ -419,29 +404,28 @@ def populateRuns(obj):
                 gradientChanged = False
 
             runStartIdx = checkAndFlushRun(endOfCryModRun or gradientChanged,
-                                           idx, prevHeaterSetting,
-                                           runStartIdx)
-
-    return runs, timeRuns, heatLoads
+                                           idx, runStartIdx)
 
 
 # Sometimes the heat load takes a little while to settle, especially after large
 # jumps in the heater settings, which renders the points taken during that time
 # useless
-def adjustForHeaterSettle(heaterVals, runs, timeRuns):
-    for idx, heaterVal in enumerate(heaterVals):
+def adjustForHeaterSettle(obj):
+    heaterBuffer = obj.heaterBuffer
+    runIndices = obj.runIndices
 
-        # Scaling factor 27 is derived from an observation that an 11W jump
-        # leads to about 300 useless points (assuming it scales linearly)
-        cutoff = (int(abs(heaterVal - heaterVals[idx - 1]) * 27)
-                  if idx > 0 else 0)
+    for idx, (runStartIdx, _) in enumerate(runIndices):
+        prevRunStartIdx = runIndices[idx-1][0] if idx > 0 else runStartIdx
+
+        heaterDelta = (abs(heaterBuffer[runStartIdx]
+                           - heaterBuffer[prevRunStartIdx]))
+        # Scaling factor 27 is derived from the assumption that an 11W jump
+        # leads to about 300 useless points (and that this scales linearly)
+        cutoff = int(heaterDelta * 27)
+        runIndices[idx][0] = runStartIdx + cutoff
 
         if IS_DEMO:
             print("cutoff: " + str(cutoff))
-
-        # Adjusting both buffers to keep them "synchronous"
-        runs[idx] = runs[idx][cutoff:]
-        timeRuns[idx] = timeRuns[idx][cutoff:]
 
 
 ################################################################################
@@ -460,7 +444,7 @@ def adjustForHeaterSettle(heaterVals, runs, timeRuns):
 #
 # noinspection PyTupleAssignmentBalance
 ################################################################################
-def plotAndFitData(heatLoads, runs, timeRuns, obj):
+def plotAndFitData(obj):
     isCalibration = isinstance(obj, Cryomodule)
 
     if isCalibration:
@@ -473,45 +457,47 @@ def plotAndFitData(heatLoads, runs, timeRuns, obj):
     ax1 = genAxis("Liquid Level as a Function of Time" + suffix,
                   "Unix Time (s)", "Downstream Liquid Level (%)")
 
-    # A list to hold our all important dLL/dt values!
-    slopes = []
+    for idx, (runStartIdx, runEndIdx) in enumerate(obj.runIndices):
 
-    for idx, run in enumerate(runs):
-        m, b, r_val, p_val, std_err = linregress(timeRuns[idx], run)
+        runData = obj.downstreamLevelBuffer[runStartIdx:runEndIdx]
+        runTimes = obj.unixTimeBuffer[runStartIdx:runEndIdx]
+
+        m, b, r_val, p_val, std_err = linregress(runTimes, runData)
+        obj.runSlopes.append(m)
 
         # Print R^2 to diagnose whether or not we had a long enough data run
         if IS_DEMO:
             print("R^2: " + str(r_val ** 2))
 
-        slopes.append(m)
-
         labelString = "{slope} %/s @ {heatLoad} W Electric Load"
         plotLabel = labelString.format(slope=round(m, 6),
-                                       heatLoad=heatLoads[idx])
-        ax1.plot(timeRuns[idx], run, label=plotLabel)
+                                       heatLoad=obj.runElecHeatLoads[idx])
+        ax1.plot(runTimes, runData, label=plotLabel)
 
-        ax1.plot(timeRuns[idx], [m * x + b for x in timeRuns[idx]])
+        ax1.plot(runTimes, [m * x + b for x in runTimes])
 
     if isCalibration:
         ax1.legend(loc='lower right')
         ax2 = genAxis("Rate of Change of Liquid Level as a Function of Heat"
                       " Load", "Heat Load (W)", "dLL/dt (%/s)")
 
-        ax2.plot(heatLoads, slopes, marker="o", linestyle="None",
-                 label="Calibration Data")
+        ax2.plot(obj.runElecHeatLoads, obj.runSlopes, marker="o",
+                 linestyle="None", label="Calibration Data")
 
-        m, b = polyfit(heatLoads, slopes, 1)
+        m, b = polyfit(obj.runElecHeatLoads, obj.runSlopes, 1)
+        obj.calibSlope = m
+        obj.calibIntercept = b
 
-        ax2.plot(heatLoads, [m * x + b for x in heatLoads],
+        ax2.plot(obj.runElecHeatLoads,
+                 [m * x + b for x in obj.runElecHeatLoads],
                  label="{slope} %/(s*W)".format(slope=round(m, 6)))
 
         ax2.legend(loc='upper right')
 
-        return m, b, ax2, heatLoads
+        return ax2
 
     else:
         ax1.legend(loc='upper right')
-        return slopes
 
 
 def genAxis(title, xlabel, ylabel):
@@ -523,10 +509,28 @@ def genAxis(title, xlabel, ylabel):
     return ax
 
 
+def addFileToCavity(cavity):
+    print("\n*** Now we'll start building a Q0 measurement file " +
+          "- please be patient ***\n")
+
+    startTimeQ0Meas = buildDatetimeFromInput("Start time for the data run:")
+
+    upperLimit = (datetime.now() - startTimeQ0Meas).total_seconds() / 3600
+
+    duration = get_float_lim("Duration of data run in hours: ",
+                             RUN_LENGTH_LOWER_LIMIT / 3600, upperLimit)
+
+    endTimeCalib = startTimeQ0Meas + timedelta(hours=duration)
+
+    cavity.dataFileName = generateCSV(startTimeQ0Meas, endTimeCalib, cavity)
+
+
 # Given a gradient and a heat load, we can "calculate" Q0 by scaling a known
 # Q0 value taken at a reference gradient and heat load
 def calcQ0(gradient, inputHeatLoad, refGradient=16.0, refHeatLoad=9.6,
            refQ0=2.7E10):
+    # TODO use Mike's more accurate Q0 spreadsheet calculation
+    # TODO correct Q0 value for 2K line temperature variation
     return (refQ0 * (refHeatLoad / inputHeatLoad)
             * ((gradient / refGradient) ** 2))
 
@@ -539,9 +543,8 @@ def getQ0Measurements():
         cryomoduleLERF = 2
         fileName = "calib_CM12_2019-02-25--11-25_18672.csv"
 
-        cryoModuleObj = Cryomodule(cryomoduleSLAC, cryomoduleLERF,
-                                   fileName, valveLockedPos,
-                                   refHeaterVal)
+        cryModObj = Cryomodule(cryomoduleSLAC, cryomoduleLERF,
+                               fileName, valveLockedPos, refHeaterVal)
 
         cavities = [2, 4]
 
@@ -557,8 +560,8 @@ def getQ0Measurements():
         cryomoduleLERF = get_int_lim("LERF Cryomodule Number: ".rjust(32),
                                      2, 3)
 
-        print("\n---------- CRYOMODULE " + str(
-            cryomoduleSLAC) + " ----------\n")
+        print("\n---------- CRYOMODULE " + str(cryomoduleSLAC)
+              + " ----------\n")
 
         calibFiles = findDataFiles("calib_CM" + str(cryomoduleSLAC))
 
@@ -570,17 +573,15 @@ def getQ0Measurements():
             "Please choose one of the options above: ", 1, len(calibFiles))
 
         if option == len(calibFiles):
-            cryoModuleObj = buildCryModObj(cryomoduleSLAC, cryomoduleLERF,
-                                           valveLockedPos, refHeaterVal)
+            cryModObj = buildCryModObj(cryomoduleSLAC, cryomoduleLERF,
+                                       valveLockedPos, refHeaterVal)
 
         else:
-            cryoModuleObj = Cryomodule(cryomoduleSLAC,
-                                       cryomoduleLERF,
-                                       calibFiles[option],
-                                       valveLockedPos,
-                                       refHeaterVal)
+            cryModObj = Cryomodule(cryomoduleSLAC, cryomoduleLERF,
+                                   calibFiles[option], valveLockedPos,
+                                   refHeaterVal)
 
-        if not cryoModuleObj:
+        if not cryModObj:
             stderr.write("Calibration file generation failed - aborting\n")
             return
 
@@ -595,15 +596,15 @@ def getQ0Measurements():
                         "Please enter a cavity not previously entered: ", 1, 8)
                 cavities.append(cavity)
 
-    m, b, ax, calibrationVals = processData(cryoModuleObj)
+    ax = processData(cryModObj)
 
     for cav in cavities:
-        cavityObj = cryoModuleObj.cavities[cav]
+        cavObj = cryModObj.cavities[cav]
 
         print("\n---------- CAVITY " + str(cav) + " ----------\n")
 
-        cavityObj.refGradientVal = get_float_lim("Gradient used during Q0" +
-                                                 " measurement: ", 0, 22)
+        cavObj.refGradientVal = get_float_lim("Gradient used during Q0" +
+                                              " measurement: ", 0, 22)
 
         fileStr = "q0meas_CM{cryMod}_cav{cavNum}".format(cryMod=cryomoduleSLAC,
                                                          cavNum=cav)
@@ -617,44 +618,48 @@ def getQ0Measurements():
             "Please choose one of the options above: ", 1, len(q0MeasFiles))
 
         if option == len(q0MeasFiles):
-            addFileToCavity(cavityObj)
-            if not cavityObj.dataFileName:
+            addFileToCavity(cavObj)
+            if not cavObj.dataFileName:
                 stderr.write("Q0 measurement file generation failed" +
                              " - aborting\n")
                 return
 
         else:
-            cavityObj.dataFileName = q0MeasFiles[option]
+            cavObj.dataFileName = q0MeasFiles[option]
 
-        slopes = processData(cavityObj)
+        processData(cavObj)
 
-        heaterVals = []
+        for idx, dLL in enumerate(cavObj.runSlopes):
 
-        for dLL in slopes:
-            heaterVal = (dLL - b) / m
-            heaterVals.append(heaterVal)
+            heatLoad = ((dLL - cryModObj.calibIntercept) / cryModObj.calibSlope)
+            cavObj.runHeatLoads.append(heatLoad)
 
-        ax.plot(heaterVals, slopes, marker="o", linestyle="None",
-                label="Projected Data for Cavity " + str(cav))
+            rfHeatLoad = heatLoad - cavObj.runElecHeatLoads[idx]
+            cavObj.runRFHeatLoads.append(rfHeatLoad)
+
+            cavObj.runQ0s.append(calcQ0(cavObj.refGradientVal, rfHeatLoad))
+
+        ax.plot(cavObj.runHeatLoads, cavObj.runSlopes, marker="o",
+                linestyle="None", label="Projected Data for " + cavObj.name)
         ax.legend(loc="lower left")
 
-        minHeatProjected = min(heaterVals)
-        minCalibrationHeat = min(calibrationVals)
+        minCavHeatLoad = min(cavObj.runHeatLoads)
+        minCalibHeatLoad = min(cryModObj.runElecHeatLoads)
 
-        if minHeatProjected < minCalibrationHeat:
-            yRange = linspace(minHeatProjected, minCalibrationHeat)
-            ax.plot(yRange, [m * i + b for i in yRange])
+        if minCavHeatLoad < minCalibHeatLoad:
+            yRange = linspace(minCavHeatLoad, minCalibHeatLoad)
+            ax.plot(yRange, [cryModObj.calibSlope * i + cryModObj.calibIntercept
+                             for i in yRange])
 
-        maxHeatProjected = max(heaterVals)
-        maxCalibrationHeat = max(calibrationVals)
+        maxCavHeatLoad = max(cavObj.runHeatLoads)
+        maxCalibHeatLoad = max(cryModObj.runElecHeatLoads)
 
-        if maxHeatProjected > maxCalibrationHeat:
-            yRange = linspace(maxCalibrationHeat, maxHeatProjected)
-            ax.plot(yRange, [m * i + b for i in yRange])
+        if maxCavHeatLoad > maxCalibHeatLoad:
+            yRange = linspace(maxCalibHeatLoad, maxCavHeatLoad)
+            ax.plot(yRange, [cryModObj.calibSlope * i + cryModObj.calibIntercept
+                             for i in yRange])
 
-        for heatLoad in heaterVals:
-            print("Calculated Heat Load: " + str(heatLoad))
-            print("    Q0: " + str(calcQ0(cavityObj.refGradientVal, heatLoad)))
+        print(cavObj)
 
     plt.draw()
 
