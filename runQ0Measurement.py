@@ -5,6 +5,7 @@ from cryomodule import Cryomodule
 from sys import stderr
 from typing import Optional
 from matplotlib import pyplot as plt
+from datetime import datetime
 
 
 # PyEpics doesn't work at LERF yet...
@@ -174,7 +175,7 @@ def checkModeRF(cavity, modeDesired):
 
 
 def phaseCavity(cavity):
-    # type: (Cryomodule.Cavity) -> Optional[str]
+    # type: (Cryomodule.Cavity) -> Optional[float]
 
     def getWaveformPV(midfix):
         formatStr = "ACCL:L1B:0{CM}{CAV}0:{MIDFIX}:AWF"
@@ -212,16 +213,111 @@ def phaseCavity(cavity):
     ax.plot(range(0, len(cavWaveform)), cavWaveform, label="Cav")
     ax.plot(range(0, len(forwardWaveform)), forwardWaveform, label="Forward")
 
+    phaseFormatPV = "ACCL:L1B:0{CM}{CAV}0:SEL_POFF"
+    phasePV = phaseFormatPV.format(CM=cavity.cryModNumJLAB,
+                                   CAV=cavity.cavityNumber)
+
     # TODO pick waveform tolerance
-    while abs(min(reverseWaveform)) > 0.5:
-        # TODO phase it
-        pass
+    minVal = min(reverseWaveform)
+    mult = 1
+    while abs(minVal) > 0.5:
+        val = cagetPV(phasePV)
+        if not val:
+            stderr.write("Unable to get phase offset. Aborting.\n")
+            return
+
+        try:
+            val = float(val[0])
+        except ValueError:
+            stderr.write("Phase offset invalid. Aborting.\n")
+            return
+
+        # TODO figure out step size
+        newVal = val + (mult * 0.1)
+        status = caputPV(phasePV, str(newVal))
+
+        if not status:
+            stderr.write("Unable to set phase offset. Aborting.\n")
+            return
+
+        sleep(0.5)
+
+        val = cagetPV(phasePV)
+        if not val:
+            stderr.write("Unable to get phase offset. Aborting.\n")
+            return
+
+        try:
+            val = float(val[0])
+            if val != newVal:
+                stderr.write("Unable to set phase offset. Aborting.\n")
+                return
+
+        except ValueError:
+            stderr.write("Phase offset invalid. Aborting.\n")
+            return
+
+        reverseWaveform = cagetPV(reverseWaveformPV, startIdx=2)
+        if not reverseWaveform:
+            stderr.write("Unable to get waveform. Aborting.\n")
+            return
+
+        # TODO figure out how to replot
+        trimWaveform(reverseWaveform)
+        prevMin = minVal
+        minVal = min(reverseWaveform)
+
+        if abs(minVal) > prevMin:
+            mult *= -1
+
+    return minVal
+
+
+def holdGradient(cavity, desiredGradient):
+    # type: (Cryomodule.Cavity, float) -> Optional[float]
+
+    amplitudeFormatPV = "ACCL:L1B:0{CM}{CAV}0:ADES"
+    amplitudePV = amplitudeFormatPV.format(CM=cavity.cryModNumJLAB,
+                                           CAV=cavity.cavityNumber)
+
+    startTime = datetime.now()
+    val = cagetPV(cavity.gradientPV)
+
+    while (datetime.now() - startTime).total_seconds() < 2400 and val:
+        val = float(val[0])
+
+        currAmp = cagetPV(amplitudePV)
+
+        if not currAmp:
+            pass
+
+        currAmp = float(currAmp[0])
+
+        if val - desiredGradient > 0.5:
+            caputPV(amplitudePV, str(currAmp - 0.1))
+
+        elif val - desiredGradient < -0.5:
+            caputPV(amplitudePV, str(currAmp + 0.1))
+
+        sleep(5)
+
+        val = cagetPV(cavity.gradientPV)
+
+    if not val:
+        stderr.write("Unable to get gradient. Aborting.\n")
+        return
 
 
 if __name__ == "__main__":
     cav = Cryomodule(12, 2, None, 0, 0).cavities[1]
+    # TODO coordinate with Cryo
     if turnOnSSA(cav):
         if turnOnRF(cav):
             # Start with pulsed mode
             if checkModeRF(cav, "4"):
-                phaseCavity(cav)
+                if phaseCavity(cav):
+                    # go to CW
+                    if checkModeRF(cav, "2"):
+                        # spins for 40 min
+                        holdGradient(cav, 16)
+                        # TODO turn off RF and SSA? or prompt?

@@ -4,6 +4,7 @@
 # Authors: Lisa Zacarias, Ben Ripman
 ################################################################################
 
+from __future__ import print_function
 from decimal import Decimal
 
 class Cryomodule:
@@ -179,9 +180,9 @@ class Cryomodule:
 def main():
     cryomodule = Cryomodule(cryModNumSLAC=12, cryModNumJLAB=2, calFileName="",
                             refValvePos=0, refHeaterVal=0)
-    for idx, cav in cryomodule.cavities.iteritems():
-        print cav.gradientPV
-        print cav.heaterPV
+    for idx, cav in cryomodule.cavities.items():
+        print(cav.gradientPV)
+        print(cav.heaterPV)
 
 
 if __name__ == '__main__':
