@@ -8,22 +8,34 @@ from matplotlib import pyplot as plt
 from datetime import datetime
 
 
-class CaputError(Exception):
-    pass
+def runQ0Meas(cavity):
+    # type: (Cryomodule.Cavity) -> None
+    try:
+        # TODO coordinate with Cryo
+        setPowerSSA(cavity, True)
 
+        # Start with pulsed mode
+        setModeRF(cavity, "4")
 
-# PyEpics doesn't work at LERF yet...
-def cagetPV(pv, startIdx=1):
-    # type: (str, int) -> Optional[List[str]]
-    return check_output(["caget", pv, "-n"]).split()[startIdx:]
+        setStateRF(cavity, True)
+        pushGoButton(cavity)
 
+        checkDrive(cavity)
 
-def caputPV(pv, val):
-    # type: (str, str) -> Optional[int]
+        phaseCavity(cavity)
 
-    out = check_call(["caput", pv, val])
-    sleep(2)
-    return out
+        # go to CW
+        setModeRF(cavity, "2")
+
+        holdGradient(cavity, 16)
+
+        powerDown(cavity)
+
+    except(CalledProcessError, IndexError, OSError,
+           ValueError, AssertionError) as e:
+        stderr.write("Procedure failed with error:\n{E}\n".format(E=e))
+        sleep(0.01)
+        powerDown(cavity)
 
 
 def setPowerSSA(cavity, turnOn):
@@ -62,10 +74,29 @@ def setPowerSSA(cavity, turnOn):
     print("SSA power set")
 
 
-def pushGoButton(cavity):
-    # type: (Cryomodule.Cavity) -> None
-    rfStatePV = cavity.genPV("PULSE_DIFF_SUM")
-    caputPV(rfStatePV, "1")
+# PyEpics doesn't work at LERF yet...
+def cagetPV(pv, startIdx=1):
+    # type: (str, int) -> Optional[List[str]]
+    return check_output(["caget", pv, "-n"]).split()[startIdx:]
+
+
+def caputPV(pv, val):
+    # type: (str, str) -> Optional[int]
+
+    out = check_call(["caput", pv, val])
+    sleep(2)
+    return out
+
+
+def setModeRF(cavity, modeDesired):
+    # type: (Cryomodule.Cavity, str) -> None
+
+    rfModePV = cavity.genPV("RFMODECTRL")
+
+    if cagetPV(rfModePV).pop() is not modeDesired:
+        caputPV(rfModePV, modeDesired)
+        assert cagetPV(rfModePV).pop() == modeDesired, "Unable to set RF mode"
+
 
 def setStateRF(cavity, turnOn):
     # type: (Cryomodule.Cavity, bool) -> None
@@ -86,14 +117,24 @@ def setStateRF(cavity, turnOn):
     print("RF state set")
 
 
-def setModeRF(cavity, modeDesired):
-    # type: (Cryomodule.Cavity, str) -> None
+def pushGoButton(cavity):
+    # type: (Cryomodule.Cavity) -> None
+    rfStatePV = cavity.genPV("PULSE_DIFF_SUM")
+    caputPV(rfStatePV, "1")
 
-    rfModePV = cavity.genPV("RFMODECTRL")
 
-    if cagetPV(rfModePV).pop() is not modeDesired:
-        caputPV(rfModePV, modeDesired)
-        assert cagetPV(rfModePV).pop() == modeDesired, "Unable to set RF mode"
+def checkDrive(cavity):
+    # type: (Cryomodule.Cavity) -> None
+
+    drivePV = cavity.genPV("SEL_ASET")
+
+    while float(cagetPV(cavity.gradientPV).pop()) < 1:
+        currDrive = float(cagetPV(drivePV).pop())
+        driveDes = str(currDrive + 1)
+
+        caputPV(drivePV, driveDes)
+        assert cagetPV(cavity.gradientPV).pop() == driveDes,\
+            "Unable to change drive"
 
 
 def phaseCavity(cavity):
@@ -109,6 +150,9 @@ def phaseCavity(cavity):
         last = waveform.pop()
         while last == "0":
             last = waveform.pop()
+
+        while waveform[0] == "0":
+            waveform.pop(0)
 
     def getAndTrimWaveforms():
         res = []
@@ -216,37 +260,10 @@ def powerDown(cavity):
         setStateRF(cavity, False)
         setPowerSSA(cavity, False)
 
-    except(CalledProcessError, IndexError, OSError, CaputError,
+    except(CalledProcessError, IndexError, OSError,
            ValueError, AssertionError) as e:
         stderr.write("Powering down failed with error:\n{E}\n".format(E=e))
         sleep(0.01)
-
-
-def runQ0Meas(cavity):
-    # type: (Cryomodule.Cavity) -> None
-    try:
-        # TODO coordinate with Cryo
-        setPowerSSA(cavity, True)
-        setStateRF(cavity, True)
-
-        # Start with pulsed mode
-        setModeRF(cavity, "4")
-        pushGoButton(cavity)
-
-        phaseCavity(cavity)
-
-        # go to CW
-        setModeRF(cavity, "2")
-
-        holdGradient(cavity, 16)
-
-        powerDown(cavity)
-
-    except(CalledProcessError, IndexError, OSError, CaputError,
-           ValueError, AssertionError) as e:
-        stderr.write("Procedure failed with error:\n{E}\n".format(E=e))
-        sleep(0.01)
-        powerDown(cavity)
 
 
 if __name__ == "__main__":
