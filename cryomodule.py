@@ -79,9 +79,9 @@ class Cryomodule:
             self.heaterPV = heaterPVStr.format(cryModNum=parent.cryModNumJLAB,
                                                cavNum=cavNumber)
 
-            gradientPVStr = "ACCL:L1B:0{cryModNum}{cavNum}0:GACT"
-            self.gradientPV = gradientPVStr.format(cryModNum=parent.cryModNumJLAB,
-                                                   cavNum=cavNumber)
+            prefxStrPV = "ACCL:L1B:0{cryModNum}{cavNum}0:{{SUFFIX}}"
+            self.prefixPV = prefxStrPV.format(cryModNum=parent.cryModNumJLAB,
+                                              cavNum=cavNumber)
 
             # These buffers store Q0 measurement data read from the CSV
             # <dataFileName>
@@ -125,6 +125,11 @@ class Cryomodule:
             # This buffer stores the calculated Q0 value for each Q0
             # measurement run
             self.runQ0s = []
+
+
+        def genPV(self, suffix):
+            return self.prefixPV.format(SUFFIX=suffix)
+
 
         def __str__(self):
 
@@ -176,6 +181,9 @@ class Cryomodule:
         def cryModNumJLAB(self):
             return self.parent.cryModNumJLAB
 
+        @property
+        def gradientPV(self):
+            return self.genPV("GACT")
 
 def main():
     cryomodule = Cryomodule(cryModNumSLAC=12, cryModNumJLAB=2, calFileName="",

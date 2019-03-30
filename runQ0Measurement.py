@@ -8,316 +8,246 @@ from matplotlib import pyplot as plt
 from datetime import datetime
 
 
+class CaputError(Exception):
+    pass
+
+
 # PyEpics doesn't work at LERF yet...
-def cagetPV(prefix, suffix=None, startIdx=1):
-    # type: (str, str, int) -> Optional[List[str]]
-
-    try:
-        if suffix:
-            assert "{SUFFIX}" in prefix, "PV prefix incorrectly formatted"
-            output = check_output(["caget", prefix.format(SUFFIX=suffix), "-n"])
-        else:
-            output = check_output(["caget", prefix, "-n"])
-
-        return output.split()[startIdx:]
-
-    except (CalledProcessError, IndexError, OSError, AssertionError) as e:
-        stderr.write("Unable to caget PV {PREFIX}\n{E}\n".format(PREFIX=prefix,
-                                                                 E=e))
-        sleep(0.01)
-        return
+def cagetPV(pv, startIdx=1):
+    # type: (str, int) -> Optional[List[str]]
+    return check_output(["caget", pv, "-n"]).split()[startIdx:]
 
 
-def caputPV(prefix, val, suffix=None):
-    # type: (str, str, str) -> Optional[int]
+def caputPV(pv, val):
+    # type: (str, str) -> Optional[int]
 
-    try:
-        if suffix:
-            assert "{SUFFIX}" in prefix, "PV prefix incorrectly formatted"
-            return check_call(["caput", prefix.format(SUFFIX=suffix), val])
-        else:
-            return check_call(["caput", prefix, val])
-
-    except (CalledProcessError, AssertionError) as e:
-        pv = prefix.format(SUFFIX=suffix)
-        stderr.write("Unable to caput PV {PV}\n{E}\n".format(PV=pv, E=e))
-        sleep(0.01)
-        return
+    out = check_call(["caput", pv, val])
+    sleep(2)
+    return out
 
 
-def turnOnSSA(cavity):
-    # type: (Cryomodule.Cavity) -> Optional[str]
-
-    print("Turning SSA on...")
+def setPowerSSA(cavity, turnOn):
+    # type: (Cryomodule.Cavity, bool) -> None
 
     # Using double curly braces to trick it into a partial formatting
-    ssaFormatPV = "ACCL:L1B:0{CM}{CAV}0:SSA:{{SUFFIX}}"
-    ssaPrefixPV = ssaFormatPV.format(CM=cavity.cryModNumJLAB,
-                                     CAV=cavity.cavityNumber)
+    ssaFormatPV = cavity.genPV("SSA:{{SUFFIX}}")
 
-    value = cagetPV(ssaPrefixPV, "StatusMsg")
+    def genPV(suffix):
+        return ssaFormatPV.format(SUFFIX=suffix)
 
-    if not value:
-        stderr.write("Unable to get SSA Status. Aborting.\n")
-        return
+    ssaStatusPV = genPV("StatusMsg")
 
-    value = value[0]
+    value = cagetPV(ssaStatusPV).pop()
 
-    # If the SSA is neither on nor off, try a reset
-    if value not in ["2", "3"]:
-
-        if not caputPV(ssaPrefixPV, "1", "FaultReset"):
-            return
-
-        # Giving the reset some time to go through
-        sleep(2)
-
-        value = cagetPV(ssaPrefixPV, "StatusMsg")
-
-        if not value or value[0] not in ["2", "3"]:
-            stderr.write("Unable to reset SSA. Aborting.\n")
-            return
-
-    if value[0] == "2":
-        # TODO Check if RF is off first?
-        if not caputPV(ssaPrefixPV, "1", "PowerOn"):
-            stderr.write("Unable to turn on SSA. Aborting.\n")
-            return
-
+    if turnOn:
+        stateMap = {"desired": "3", "opposite": "2", "pv": "PowerOn"}
     else:
-        print("SSA turned on")
-        return value
+        stateMap = {"desired": "2", "opposite": "3", "pv": "PowerOff"}
 
+    if value != stateMap["desired"]:
+        if value == stateMap["opposite"]:
+            print("Setting SSA power...")
+            caputPV(genPV(stateMap["pv"]), "1")
 
-def turnOnRF(cavity):
-    # type: (Cryomodule.Cavity) -> Optional[str]
-    print("Turning RF on...")
-
-    rfStateFormatPV = "ACCL:L1B:0{CM}{CAV}0:RFSTATE"
-    rfStatePV = rfStateFormatPV.format(CM=cavity.cryModNumJLAB,
-                                       CAV=cavity.cavityNumber)
-
-    rfStateControlPV = "ACCL:L1B:0{CM}{CAV}0:RFCTRL"
-    rfControlPV = rfStateControlPV.format(CM=cavity.cryModNumJLAB,
-                                          CAV=cavity.cavityNumber)
-
-    rfState = cagetPV(rfStatePV)
-
-    if not rfState:
-        stderr.write("Unable to get RF status. Aborting.\n")
-        return
-
-    rfIsOn = (rfState[0] == "1")
-
-    if rfIsOn:
-        print("RF already on.")
-        return rfState
-
-    else:
-
-        if not caputPV(rfControlPV, "1"):
-            stderr.write("Unable to turn RF on. Aborting.\n")
-            return
-
-        sleep(2)
-
-        rfState = cagetPV(rfStatePV)
-
-        if not rfState:
-            stderr.write("Unable to get RF status. Aborting.\n")
-            return
-
-        rfIsOn = (rfState[0] == "1")
-
-        if rfIsOn:
-            print("RF turned on.")
-            return rfState
-
+            # can't use parentheses with asserts, apparently
+            assert cagetPV(ssaStatusPV).pop() ==\
+                   stateMap["desired"], "Could not set SSA Power"
         else:
-            stderr.write("Unable to turn RF on. Aborting.\n")
-            return
+            print("Resetting SSA...")
+            caputPV(genPV("FaultReset"), "1")
+            assert cagetPV(ssaStatusPV).pop() in ["2", "3"],\
+                "Could not reset SSA"
+            setPowerSSA(cavity, turnOn)
+
+    print("SSA power set")
 
 
-def checkModeRF(cavity, modeDesired):
-    # type: (Cryomodule.Cavity, str) -> Optional[str]
+def pushGoButton(cavity):
+    # type: (Cryomodule.Cavity) -> None
+    rfStatePV = cavity.genPV("PULSE_DIFF_SUM")
+    caputPV(rfStatePV, "1")
 
-    rfModeFormatPV = "ACCL:L1B:0{CM}{CAV}0:RFMODECTRL"
-    rfModePV = rfModeFormatPV.format(CM=cavity.cryModNumJLAB,
-                                     CAV=cavity.cavityNumber)
+def setStateRF(cavity, turnOn):
+    # type: (Cryomodule.Cavity, bool) -> None
 
-    mode = cagetPV(rfModePV)
+    rfStatePV = cavity.genPV("RFSTATE")
+    rfControlPV = cavity.genPV("RFCTRL")
 
-    if not mode:
-        stderr.write("Unable to get RF mode. Aborting.\n")
-        return
+    rfState = cagetPV(rfStatePV).pop()
 
-    mode = mode[0]
+    desiredState = ("1" if turnOn else "0")
 
-    if mode is not modeDesired:
-        if not caputPV(rfModePV, modeDesired):
-            stderr.write("Unable to set RF mode. Aborting.\n")
-            return
+    if rfState != desiredState:
+        print("Setting RF State...")
+        caputPV(rfControlPV, desiredState)
+        assert cagetPV(rfStatePV).pop() == desiredState,\
+            "Unable to set RF state"
 
-        sleep(2)
-        mode = cagetPV(rfModePV)
+    print("RF state set")
 
-        if not mode:
-            stderr.write("Unable to get RF mode. Aborting.\n")
-            return
 
-        mode = mode[0]
+def setModeRF(cavity, modeDesired):
+    # type: (Cryomodule.Cavity, str) -> None
 
-        if mode is not modeDesired:
-            stderr.write("Unable to set RF mode. Aborting.\n")
-            return
+    rfModePV = cavity.genPV("RFMODECTRL")
 
-    return mode
+    if cagetPV(rfModePV).pop() is not modeDesired:
+        caputPV(rfModePV, modeDesired)
+        assert cagetPV(rfModePV).pop() == modeDesired, "Unable to set RF mode"
 
 
 def phaseCavity(cavity):
-    # type: (Cryomodule.Cavity) -> Optional[float]
+    # type: (Cryomodule.Cavity) -> None
 
-    def getWaveformPV(midfix):
-        formatStr = "ACCL:L1B:0{CM}{CAV}0:{MIDFIX}:AWF"
-        return formatStr.format(CM=cavity.cryModNumJLAB,
-                                CAV=cavity.cavityNumber, MIDFIX=midfix)
+    waveformFormatStr = cavity.genPV("{INFIX}:AWF")
 
+    def getWaveformPV(infix):
+        return waveformFormatStr.format(INFIX=infix)
+
+    # get rid of trailing zeros - might be more elegant way of doing this
     def trimWaveform(waveform):
         last = waveform.pop()
         while last == "0":
             last = waveform.pop()
 
-    cavWaveformPV = getWaveformPV("CAV")
-    forwardWaveformPV = getWaveformPV("FWD")
-    reverseWaveformPV = getWaveformPV("REV")
+    def getAndTrimWaveforms():
+        res = []
 
-    reverseWaveform = cagetPV(reverseWaveformPV, startIdx=2)
-    cavWaveform = cagetPV(cavWaveformPV, startIdx=2)
-    forwardWaveform = cagetPV(forwardWaveformPV, startIdx=2)
+        for suffix in ["REV", "CAV", "FWD"]:
+            res.append(cagetPV(getWaveformPV(suffix), startIdx=2))
+            trimWaveform(res[-1])
 
-    if not reverseWaveform or not cavWaveform or not forwardWaveform:
-        stderr.write("Unable to get waveforms. Aborting.\n")
-        return
+        return res
 
-    trimWaveform(reverseWaveform)
-    trimWaveform(cavWaveform)
-    trimWaveform(forwardWaveform)
+    def getLine(waveform, lbl):
+        return ax.plot(range(len(waveform)), waveform, label=lbl)
 
+    revWaveform, cavWaveform, fwdWaveform = getAndTrimWaveforms()
+
+    plt.ion()
     fig = plt.figure()
     ax = fig.add_subplot(111)
     ax.set_title("Waveforms")
-    ax.set_xlabel("Amplitude")
-    ax.set_ylabel("")
+    ax.set_xlabel("Seconds")
+    ax.set_ylabel("Amplitude")
 
-    ax.plot(range(0, len(reverseWaveform)), reverseWaveform, label="Reverse")
-    ax.plot(range(0, len(cavWaveform)), cavWaveform, label="Cav")
-    ax.plot(range(0, len(forwardWaveform)), forwardWaveform, label="Forward")
+    ax.set_autoscale_on(True)
+    ax.autoscale_view(True, True, True)
 
-    phaseFormatPV = "ACCL:L1B:0{CM}{CAV}0:SEL_POFF"
-    phasePV = phaseFormatPV.format(CM=cavity.cryModNumJLAB,
-                                   CAV=cavity.cavityNumber)
+    lineRev, = getLine(revWaveform, "Reverse")
+    lineCav, = getLine(cavWaveform, "Cavity")
+    lineFwd, = getLine(fwdWaveform, "Forward")
 
-    # TODO pick waveform tolerance
-    minVal = min(reverseWaveform)
+    fig.canvas.draw()
+    fig.canvas.flush_events()
+
+    phasePV = cavity.genPV("SEL_POFF")
+
+    minVal = min(revWaveform)
     mult = 1
-    while abs(minVal) > 0.5:
-        val = cagetPV(phasePV)
-        if not val:
-            stderr.write("Unable to get phase offset. Aborting.\n")
-            return
 
-        try:
-            val = float(val[0])
-        except ValueError:
-            stderr.write("Phase offset invalid. Aborting.\n")
-            return
+    lineWaveformPairs = [(lineRev, revWaveform), (lineCav, cavWaveform),
+                         (lineFwd, fwdWaveform)]
 
-        # TODO figure out step size
-        newVal = val + (mult * 0.1)
-        status = caputPV(phasePV, str(newVal))
+    while abs(minVal) > 0.1:
+        val = float(cagetPV(phasePV).pop())
 
-        if not status:
-            stderr.write("Unable to set phase offset. Aborting.\n")
-            return
+        newVal = val + (mult * 1)
+        caputPV(phasePV, str(newVal))
 
-        sleep(0.5)
+        assert float(cagetPV(phasePV).pop()) == newVal,\
+            "Unable to set phase offset"
 
-        val = cagetPV(phasePV)
-        if not val:
-            stderr.write("Unable to get phase offset. Aborting.\n")
-            return
+        revWaveform, cavWaveform, fwdWaveform = getAndTrimWaveforms()
 
-        try:
-            val = float(val[0])
-            if val != newVal:
-                stderr.write("Unable to set phase offset. Aborting.\n")
-                return
+        for line, waveform in lineWaveformPairs:
+            line.set_data(range(waveform), waveform)
 
-        except ValueError:
-            stderr.write("Phase offset invalid. Aborting.\n")
-            return
+        ax.set_autoscale_on(True)
+        ax.autoscale_view(True, True, True)
 
-        reverseWaveform = cagetPV(reverseWaveformPV, startIdx=2)
-        if not reverseWaveform:
-            stderr.write("Unable to get waveform. Aborting.\n")
-            return
+        fig.canvas.draw()
+        fig.canvas.flush_events()
 
-        # TODO figure out how to replot
-        trimWaveform(reverseWaveform)
         prevMin = minVal
-        minVal = min(reverseWaveform)
+        minVal = min(revWaveform)
 
-        if abs(minVal) > prevMin:
+        # I think this accounts for inflection points? Hopefully the decrease
+        # in step size addresses the potential for it to get stuck
+        if (prevMin <= 0 and minVal > 0) or (prevMin >= 0 and minVal < 0):
+            mult *= -0.5
+
+        elif abs(minVal) > abs(prevMin):
             mult *= -1
-
-    return minVal
 
 
 def holdGradient(cavity, desiredGradient):
-    # type: (Cryomodule.Cavity, float) -> Optional[float]
+    # type: (Cryomodule.Cavity, float) -> None
 
-    amplitudeFormatPV = "ACCL:L1B:0{CM}{CAV}0:ADES"
-    amplitudePV = amplitudeFormatPV.format(CM=cavity.cryModNumJLAB,
-                                           CAV=cavity.cavityNumber)
+    amplitudePV = cavity.genPV("ADES")
 
     startTime = datetime.now()
-    val = cagetPV(cavity.gradientPV)
 
-    while (datetime.now() - startTime).total_seconds() < 2400 and val:
-        val = float(val[0])
+    mult = 1
+    prevDiff = float(cagetPV(cavity.gradientPV).pop()) - desiredGradient
 
-        currAmp = cagetPV(amplitudePV)
+    # Spin for 40 minutes
+    while (datetime.now() - startTime).total_seconds() < 2400:
 
-        if not currAmp:
-            pass
+        gradient = float(cagetPV(cavity.gradientPV).pop())
+        currAmp = float(cagetPV(amplitudePV).pop())
 
-        currAmp = float(currAmp[0])
+        diff = gradient - desiredGradient
+        if (prevDiff >= 0 and diff < 0) or (prevDiff <= 0 and diff > 0):
+            mult *= -0.5
 
-        if val - desiredGradient > 0.5:
-            caputPV(amplitudePV, str(currAmp - 0.1))
+        elif abs(diff - prevDiff) > 0.5:
+            mult *= 1
 
-        elif val - desiredGradient < -0.5:
-            caputPV(amplitudePV, str(currAmp + 0.1))
+        caputPV(amplitudePV, str(currAmp - 0.5*mult))
 
-        sleep(5)
+        prevDiff = diff
 
-        val = cagetPV(cavity.gradientPV)
+        sleep(1)
 
-    if not val:
-        stderr.write("Unable to get gradient. Aborting.\n")
-        return
+
+def powerDown(cavity):
+    try:
+        setStateRF(cavity, False)
+        setPowerSSA(cavity, False)
+
+    except(CalledProcessError, IndexError, OSError, CaputError,
+           ValueError, AssertionError) as e:
+        stderr.write("Powering down failed with error:\n{E}\n".format(E=e))
+        sleep(0.01)
+
+
+def runQ0Meas(cavity):
+    # type: (Cryomodule.Cavity) -> None
+    try:
+        # TODO coordinate with Cryo
+        setPowerSSA(cavity, True)
+        setStateRF(cavity, True)
+
+        # Start with pulsed mode
+        setModeRF(cavity, "4")
+        pushGoButton(cavity)
+
+        phaseCavity(cavity)
+
+        # go to CW
+        setModeRF(cavity, "2")
+
+        holdGradient(cavity, 16)
+
+        powerDown(cavity)
+
+    except(CalledProcessError, IndexError, OSError, CaputError,
+           ValueError, AssertionError) as e:
+        stderr.write("Procedure failed with error:\n{E}\n".format(E=e))
+        sleep(0.01)
+        powerDown(cavity)
 
 
 if __name__ == "__main__":
-    cav = Cryomodule(12, 2, None, 0, 0).cavities[1]
-    # TODO coordinate with Cryo
-    if turnOnSSA(cav):
-        if turnOnRF(cav):
-            # Start with pulsed mode
-            if checkModeRF(cav, "4"):
-                if phaseCavity(cav):
-                    # go to CW
-                    if checkModeRF(cav, "2"):
-                        # spins for 40 min
-                        holdGradient(cav, 16)
-                        # TODO turn off RF and SSA? or prompt?
+    runQ0Meas(Cryomodule(12, 2, None, 0, 0).cavities[1])
