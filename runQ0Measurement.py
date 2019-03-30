@@ -188,7 +188,7 @@ def holdGradient(cavity, desiredGradient):
 
     startTime = datetime.now()
 
-    mult = 1
+    step = 0.5
     prevDiff = float(cagetPV(cavity.gradientPV).pop()) - desiredGradient
 
     # Spin for 40 minutes
@@ -198,13 +198,13 @@ def holdGradient(cavity, desiredGradient):
         currAmp = float(cagetPV(amplitudePV).pop())
 
         diff = gradient - desiredGradient
+
+        mult = 1 if (diff <= 0) else -1
+
         if (prevDiff >= 0 and diff < 0) or (prevDiff <= 0 and diff > 0):
-            mult *= -0.5
+            step *= (0.5 if step > 0.01 else 1.5)
 
-        elif abs(diff - prevDiff) > 0.5:
-            mult *= 1
-
-        caputPV(amplitudePV, str(currAmp - 0.5*mult))
+        caputPV(amplitudePV, str(currAmp + mult*step))
 
         prevDiff = diff
 
