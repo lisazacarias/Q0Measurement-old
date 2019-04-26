@@ -13,7 +13,6 @@ from os.path import isfile
 from sys import stderr
 from datetime import datetime
 from numpy import mean, exp
-# from calculateQ0 import parseRawData
 from scipy.stats import linregress
 from numpy import polyfit
 from matplotlib import pyplot as plt
@@ -79,10 +78,6 @@ class Container(object):
         self.heaterDesPVs = None
         self.heaterActPVs = None
 
-    # @property
-    # def runElecHeatLoads(self):
-    #     return [run.elecHeatLoad for run in self.runs]
-
     def addDataSession(self, startTime, endTime, timeInt, refValvePos,
                        refHeatLoad, refGradVal=None):
         # type: (datetime, datetime, int, float, float, None) -> DataSession
@@ -104,48 +99,9 @@ class Container(object):
 
 class Cryomodule(Container):
     def __init__(self, cryModNumSLAC, cryModNumJLAB):
-                 # calFileName, refValvePos, refHeatLoad):
         super(Cryomodule, self).__init__(cryModNumSLAC, cryModNumJLAB)
 
-        # self.cryModNumSLAC = cryModNumSLAC
-        # self.cryModNumJLAB = cryModNumJLAB
-        # self.dataFileName = calFileName
-        # self.refValvePos = refValvePos
-        # self.refHeatLoad = refHeatLoad
-
         self.name = self.addNumToStr("CM{CM}")
-
-        # self.dsPressurePV = self.addNumToStr("CPT:CM0{CM}:2302:DS:PRESS")
-        # self.jtModePV = self.addNumToStr("CPV:CM0{CM}:3001:JT:MODE")
-        # self.jtPosSetpointPV = self.addNumToStr("CPV:CM0{CM}:3001:JT:POS_SETPT")
-        #
-        # lvlFormatStr = self.addNumToStr("CLL:CM0{CM}:{{INFIX}}:{{LOC}}:LVL")
-        #
-        # self.dsLevelPV = lvlFormatStr.format(INFIX="2301", LOC="DS")
-        # self.usLevelPV = lvlFormatStr.format(INFIX="2601", LOC="US")
-        #
-        # self.cvMaxPV = self.addNumToStr("CPID:CM0{CM}:3001:JT:CV_{SUFF}", "MAX")
-        # self.cvMinPV = self.addNumToStr("CPID:CM0{CM}:3001:JT:CV_{SUFF}", "MIN")
-        # self.valvePV = self.addNumToStr("CPID:CM0{CM}:3001:JT:CV_{SUFF}",
-        #                                 "VALUE")
-
-        # These buffers store calibration data read from the CSV <dataFileName>
-        # self.unixTimeBuff = []
-        # self.timeBuff = []
-        # self.valvePosBuff = []
-        # self.dsLevelBuff = []
-        # self.usLevelBuff = []
-        # self.elecHeatDesBuff = []
-        # self.elecHeatActBuff = []
-
-        # This buffer stores the heater calibration data runs as DataRun objects
-        # self.runs = []
-        # self.dataSessions = {}
-
-        # Maps this cryomodule's PVs to its corresponding data buffers
-        # self.pvBuffMap = {self.valvePV: self.valvePosBuff,
-        #                   self.dsLevelPV: self.dsLevelBuff,
-        #                   self.usLevelPV: self.usLevelBuff}
 
         # Give each cryomodule 8 cavities
         cavities = {}
@@ -165,45 +121,6 @@ class Cryomodule(Container):
 
         self.cavities = OrderedDict(sorted(cavities.items()))
 
-        # These characterize the cryomodule's overall heater calibration curve
-        # self.calibSlope = None
-        # self.calibIntercept = None
-        #
-        # self.delta = 0
-        #
-        # self.axis = None
-
-    # def addNumToStr(self, formatStr, suffix=None):
-    #     if suffix:
-    #         return formatStr.format(CM=self.cryModNumJLAB, SUFF=suffix)
-    #     else:
-    #         return formatStr.format(CM=self.cryModNumJLAB)
-
-    # # Returns a list of the PVs used for its data acquisition, including
-    # # the PV of the cavity heater used for calibration
-    # def getPVs(self):
-    #     return ([self.valvePV, self.dsLevelPV, self.usLevelPV]
-    #             + self.heaterDesPVs + self.heaterActPVs)
-
-    # def addRun(self, startIdx, endIdx):
-    #     self.runs.append(DataRun(startIdx, endIdx, self, len(self.runs) + 1))
-    #
-    # def addDataSession(self, startTime, endTime, timeInt):
-    #     session = DataSession(self, startTime, endTime, timeInt)
-    #     self.dataSessions[hash(session)] = session
-    #
-    # def parseData(self, startTime, endTime, timeInt):
-    #     index = DataSession.hash(startTime, endTime, timeInt)
-    #     self.dataSessions[index].parseDataFromCSV()
-
-    # @property
-    # def runElecHeatLoads(self):
-    #     return [run.elecHeatLoad for run in self.runs]
-
-    # @property
-    # def runSlopes(self):
-    #     return [run.slope for run in self.runs]
-
 
 class Cavity(Container):
     def __init__(self, parent, cavNumber):
@@ -215,52 +132,7 @@ class Cavity(Container):
 
         self.name = "Cavity {cavNum}".format(cavNum=cavNumber)
         self.cavNum = cavNumber
-        # self.dataFileName = None
-
-        # self.refGradVal = None
-        # self.refValvePos = None
         self.delta = 0
-
-        # self.refHeatLoad = self.parent.refHeatLoad
-
-        # These buffers store Q0 measurement data read from the CSV
-        # <dataFileName>
-        # self.unixTimeBuff = []
-        # self.timeBuff = []
-        # self.valvePosBuff = []
-        # self.dsLevelBuff = []
-        # self.usLevelBuff = []
-        # self.gradBuff = []
-        # self.dsPressBuff = []
-        # self.elecHeatDesBuff = []
-        # self.elecHeatActBuff = []
-
-        # This buffer stores the heater calibration data runs as Q0DataRun
-        # objects
-        # self.runs = []
-        # self.dataSessions = []
-
-        # Maps this cavity's PVs to its corresponding data buffers
-        # (including a couple of PVs from its parent cryomodule)
-        # self.pvBuffMap = {self.parent.valvePV: self.valvePosBuff,
-        #                   self.parent.dsLevelPV: self.dsLevelBuff,
-        #                   self.parent.usLevelPV: self.usLevelBuff,
-        #                   self.gradPV: self.gradBuff,
-        #                   self.parent.dsPressurePV: self.dsPressBuff}
-
-    # def clear(self):
-    #     del self.runs[:]
-    #     del self.unixTimeBuff[:]
-    #     del self.timeBuff[:]
-    #     del self.valvePosBuff[:]
-    #     del self.dsLevelBuff[:]
-    #     del self.usLevelBuff[:]
-    #     del self.elecHeatDesBuff[:]
-    #     del self.elecHeatActBuff[:]
-
-    # def addDataSession(self, startTime, endTime, timeInt):
-    #     self.dataSessions.append(
-    #         Q0DataSession(self, startTime, endTime, timeInt))
 
     def genPV(self, formatStr, suffix):
         return formatStr.format(CM=self.cryModNumJLAB, CAV=self.cavNum,
@@ -269,108 +141,16 @@ class Cavity(Container):
     def genAcclPV(self, suffix):
         return self.genPV("ACCL:L1B:0{CM}{CAV}0:{SUFF}", suffix)
 
-    # Similar to the Cryomodule function, it just has the gradient PV
-    # instead of the heater PV
     def getPVs(self):
         return ([self.parent.valvePV, self.parent.dsLevelPV,
                  self.parent.usLevelPV, self.gradPV,
                  self.parent.dsPressurePV] + self.parent.heaterDesPVs
                 + self.parent.heaterActPVs)
 
-    # def printReport(self):
-    #     for run in self.runs:
-    #         run.printReport()
-
-    # def addRun(self, startIdx, endIdx):
-    #     self.runs.append(Q0DataRun(startIdx, endIdx, self,
-    #                                len(self.runs) + 1))
-
-    # The @property annotation is effectively a shortcut for defining a
-    # class variable and giving it a custom getter function (so now
-    # whenever someone calls Cavity.cryModNumSLAC, it'll return the parent
-    # value)
-    # @property
-    # def cryModNumSLAC(self):
-    #     return self.parent.cryModNumSLAC
-
-    # @property
-    # def runElecHeatLoads(self):
-    #     return [run.elecHeatLoad for run in self.runs]
-
-    # @property
-    # def runHeatLoads(self):
-    #     return [run.totalHeatLoad for run in self.runs
-    #             if run.elecHeatLoadDes == 0]
-    #
-    # @property
-    # def adjustedRunSlopes(self):
-    #     m = self.parent.calibSlope
-    #     b = self.parent.calibIntercept
-    #     return [(m * run.totalHeatLoad) + b for run in self.runs
-    #             if run.elecHeatLoadDes == 0]
-
-    # @property
-    # def cryModNumJLAB(self):
-    #     return self.parent.cryModNumJLAB
-
     @property
     def gradPV(self):
         return self.genAcclPV("GACT")
 
-    # @property
-    # def valvePV(self):
-    #     return self.parent.valvePV
-    #
-    # @property
-    # def dsLevelPV(self):
-    #     return self.parent.dsLevelPV
-    #
-    # @property
-    # def usLevelPV(self):
-    #     return self.parent.usLevelPV
-    #
-    # @property
-    # def jtModePV(self):
-    #     return self.parent.jtModePV
-    #
-    # @property
-    # def cvMaxPV(self):
-    #     return self.parent.cvMaxPV
-    #
-    # @property
-    # def cvMinPV(self):
-    #     return self.parent.cvMinPV
-    #
-    # @property
-    # def jtPosSetpointPV(self):
-    #     return self.parent.jtPosSetpointPV
-    #
-    # @property
-    # def heaterDesPVs(self):
-    #     return self.parent.heaterDesPVs
-    #
-    # @property
-    # def heaterActPVs(self):
-    #     return self.parent.heaterActPVs
-    #
-    # @property
-    # def calibIntercept(self):
-    #     return self.parent.calibIntercept
-    #
-    # @property
-    # def calibSlope(self):
-    #     return self.parent.calibSlope
-
-    # @property
-    # def offset(self):
-    #     offsets = []
-    #
-    #     for run in self.runs:
-    #         runOffset = run.offset
-    #         if runOffset:
-    #             offsets.append(runOffset)
-    #
-    #     return mean(offsets) if offsets else 0
 
     def addDataSession(self, startTime, endTime, timeInt, refValvePos,
                        refHeatLoad, refGradVal=None, calibSession=None):
@@ -383,6 +163,22 @@ class Cavity(Container):
 
 class DataSession(object):
 
+    ############################################################################
+    # getArchiveData runs a shell command to get archive data. The syntax we're
+    # using is:
+    #
+    #     mySampler -b "%Y-%m-%d %H:%M:%S" -s 1s -n[numPoints] [pv1] ... [pvn]
+    #
+    # where the "-b" denotes the start time, "-s 1s" says that the desired time
+    # step between data points is 1 second, -n[numPoints] tells us how many
+    # points we want, and [pv1]...[pvn] are the PVs we want archived
+    #
+    # Ex:
+    #     mySampler -b "2019-03-28 14:16" -s 30s -n11 R121PMES R221PMES
+    #
+    # @param startTime: datetime object
+    # @param signals: list of PV strings
+    ############################################################################
     @staticmethod
     def getArchiveData(startTime, numPoints, signals,
                        timeInt=MYSAMPLER_TIME_INTERVAL):
@@ -415,9 +211,10 @@ class DataSession(object):
     @staticmethod
     def reformatDate(row):
         try:
-            # This clusterfuck regex is pretty much just trying to find strings that
-            # match %Y-%m-%d %H:%M:%S and making them %Y-%m-%d-%H:%M:%S instead
-            # (otherwise the csv parser interprets it as two different columns)
+            # This clusterfuck regex is pretty much just trying to find strings
+            # that match %Y-%m-%d %H:%M:%S and making them %Y-%m-%d-%H:%M:%S
+            # instead (otherwise the csv parser interprets it as two different
+            # columns)
             regex = compile("[0-9]{4}-[0-9]{2}-[0-9]{2}"
                             + " [0-9]{2}:[0-9]{2}:[0-9]{2}")
             res = findall(regex, row)[0].replace(" ", "-")
@@ -651,12 +448,12 @@ class DataSession(object):
         # gradient PVs so it's possible that they could go negative.
         return ((grad / 16) ** 2) * 9.6 if grad > 0 else 0
 
-    ################################################################################
-    # adjustForSettle cuts off data that's corrupted because the heat load on the
-    # 2 K helium bath is changing. (When the cavity heater setting or the RF
+    ############################################################################
+    # adjustForSettle cuts off data that's corrupted because the heat load on
+    # the 2 K helium bath is changing. (When the cavity heater setting or the RF
     # gradient change, it takes time for that change to become visible to the
     # helium because there are intermediate structures with heat capacity.)
-    ################################################################################
+    ############################################################################
     def adjustForSettle(self):
 
         for i, run in enumerate(self.runs):
@@ -676,11 +473,12 @@ class DataSession(object):
 
                 totalHeatDelta = abs(elecHeatDelta)
 
-            # Calculate the number of data points to be chopped off the beginning of
-            # the data run based on the expected change in the cryomodule heat load.
-            # The scale factor is derived from the assumption that a 1 W change in
-            # the heat load leads to about 25 useless points (and that this scales
-            # linearly with the change in heat load, which isn't really true).
+            # Calculate the number of data points to be chopped off the
+            # beginning of the data run based on the expected change in the
+            # cryomodule heat load. The scale factor is derived from the
+            # assumption that a 1 W change in the heat load leads to about 25
+            # useless points (and that this scales linearly with the change in
+            # heat load, which isn't really true).
             # TODO scale this with sample rate
             cutoff = int(totalHeatDelta * 25)
 
@@ -698,12 +496,8 @@ class DataSession(object):
                 print("cutoff: " + str(cutoff))
 
     ############################################################################
-    # generateCSV is a function that takes either a Cryomodule or Cavity object
-    # and generates a CSV data file for it if one doesn't already exist (or
-    # overwrites the previously existing file if the user desires)
-    #
-    # @param startTime, endTime: datetime objects
-    # @param object: Cryomodule or Cryomodule.Cavity
+    # generateCSV is a function that generates a CSV data file if one doesn't
+    # already exist
     ############################################################################
     def generateCSV(self):
         if isfile(self.fileName):
@@ -773,7 +567,10 @@ class DataSession(object):
                     csvWriter.writerow(trimmedRow)
 
             return self.fileName
-
+    ############################################################################
+    # parseDataFromCSV parses CSV data to populate the given session's data
+    # buffers
+    ############################################################################
     def parseDataFromCSV(self):
         def linkBuffToColumn(column, dataBuff, header):
             try:
@@ -806,7 +603,8 @@ class DataSession(object):
                 datetimeFormatStr = "%Y-%m-%d-%H:%M:%S"
 
             except ValueError:
-                # Data exported from MyaPlot has the timestamp column labeled "time"
+                # Data exported from MyaPlot has the timestamp column labeled
+                # "time"
                 timeIdx = header.index("time")
                 datetimeFormatStr = "%Y-%m-%d %H:%M:%S"
 
@@ -815,17 +613,14 @@ class DataSession(object):
             for row in csvReader:
                 dt = datetime.strptime(row[timeIdx], datetimeFormatStr)
 
-                # del obj.timeBuff[:]
                 self.timeBuff.append(dt)
 
                 # We use the Unix time to make the math easier during data
                 # processing
-                # del obj.unixTimeBuff[:]
                 self.unixTimeBuff.append((dt - timeZero).total_seconds())
 
                 # Actually parsing the CSV data into the buffers
                 for col, idxBuffDict in columnDict.items():
-                    # del idxBuffDict["buffer"][:]
                     try:
                         idxBuffDict["buffer"].append(
                             float(row[idxBuffDict["idx"]]))
@@ -869,6 +664,10 @@ class DataSession(object):
 
         return runStartIdx
 
+    ############################################################################
+    # populateRuns takes the data in an session's buffers and slices it into
+    # data "runs" based on cavity heater settings.
+    ############################################################################
     def populateRuns(self):
         runStartIdx = 0
 
@@ -985,6 +784,7 @@ class Q0DataSession(DataSession):
 
             if i == 0:
                 totalHeatDelta = (elecHeatBuff[startIdx] - self.refHeatLoad)
+                # This is the big difference, I think
                 totalHeatDelta += self.approxHeatFromGrad(
                     self.gradBuff[startIdx])
 
@@ -1004,12 +804,6 @@ class Q0DataSession(DataSession):
                 gradHeatDelta = currGradHeatLoad - prevGradHeatLoad
                 totalHeatDelta = abs(elecHeatDelta + gradHeatDelta)
 
-            # Calculate the number of data points to be chopped off the beginning of
-            # the data run based on the expected change in the cryomodule heat load.
-            # The scale factor is derived from the assumption that a 1 W change in
-            # the heat load leads to about 25 useless points (and that this scales
-            # linearly with the change in heat load, which isn't really true).
-            # TODO scale this with sample rate
             cutoff = int(totalHeatDelta * 25)
 
             idx = self.runs[i].startIdx
@@ -1028,10 +822,6 @@ class Q0DataSession(DataSession):
     @property
     def fileName(self):
         if not self._dataFileName:
-            # Define a file name for the CSV we're saving. There are calibration
-            # files and q0 measurement files. Both include a time stamp in the
-            # format year-month-day--hour-minute. They also indicate the number
-            # of data points.
             suffixStr = "{start}{nPoints}.csv"
             suffix = suffixStr.format(
                 start=self.startTime.strftime("_%Y-%m-%d--%H-%M_"),
