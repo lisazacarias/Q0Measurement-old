@@ -1,2 +1,3 @@
-JLAB Number,Reference Heat Load,JT Valve Position,Start Time,End Time,MySampler Time Interval
-2,16,24,3/27/19 11:00,3/27/19 16:00,
+JLAB Number,Reference Heat Load,JT Valve Position,Start,End,MySampler Time Interval
+2,16,24,3/27/19 11:00,3/27/19 16:00,1
+2,16,24,3/27/19 11:00,3/27/19 16:00,5

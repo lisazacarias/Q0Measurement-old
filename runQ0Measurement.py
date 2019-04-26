@@ -62,10 +62,12 @@ def runQ0Meas(cavity, desiredGradient):
 
     except(CalledProcessError, IndexError, OSError, ValueError,
            AssertionError) as e:
-        stderr.write("\nProcedure failed with error:\n{E}\n\n".format(E=e))
-        sleep(0.01)
+        writeAndFlushStdErr("Procedure failed with error:\n{E}\n".format(E=e))
         # powerDown(cavity)
 
+def writeAndFlushStdErr(message):
+    stderr.write("\n{MSSG}\n".format(MSSG=message))
+    stderr.flush()
 
 def characterize(cavity):
 
@@ -398,8 +400,7 @@ def phaseCavity(cavity):
         caputPV(phasePV, str(newVal))
 
         if float(cagetPV(phasePV)) != newVal:
-            stderr.write("\nMismatch between desired and actual phase\n")
-            sleep(0.01)
+            writeAndFlushStdErr("Mismatch between desired and actual phase")
 
         revWaveform, fwdWaveform, cavWaveform = getAndTrimWaveforms()
 
@@ -522,8 +523,8 @@ def powerDown(cavity):
 
     except(CalledProcessError, IndexError, OSError,
            ValueError, AssertionError) as e:
-        stderr.write("\nPowering down failed with error:\n{E}\n\n".format(E=e))
-        sleep(0.01)
+        writeAndFlushStdErr("Powering down failed with error:\n{E}\n"
+                            .format(E=e))
 
 
 if __name__ == "__main__":
