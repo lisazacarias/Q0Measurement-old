@@ -15,6 +15,18 @@ def get_float_lim(prompt, low_lim, high_lim):
     return getNumericalInput(prompt, low_lim, high_lim, float)
 
 
+def getNumInputFromLst(prompt, lst, inputType):
+    response = get_input(prompt, inputType)
+    while response not in lst:
+        stderr.write(ERROR_MESSAGE + "\n")
+        # Need to pause briefly for some reason to make sure the error message
+        # shows up before the next prompt
+        sleep(0.01)
+        response = get_input(prompt, inputType)
+
+    return response
+
+
 def getNumericalInput(prompt, lowLim, highLim, inputType):
     response = get_input(prompt, inputType)
 

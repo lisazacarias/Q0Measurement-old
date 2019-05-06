@@ -20,6 +20,8 @@ from subprocess import check_output, CalledProcessError
 from re import compile, findall
 
 # The LL readings get wonky when the upstream liquid level dips below 66
+from epicsShell import cagetPV
+
 UPSTREAM_LL_LOWER_LIMIT = 66
 
 # Used to reject data where the JT valve wasn't at the correct position
@@ -115,7 +117,7 @@ class Cryomodule(Container):
                                         "POWER")
 
         for i in range(1, 9):
-            cavities[i] = Cavity(parent=self, cavNumber=i)
+            cavities[i] = Cavity(cryMod=self, cavNumber=i)
             self.heaterDesPVs.append(heaterDesStr.format(CAV=i))
             self.heaterActPVs.append(heaterActStr.format(CAV=i))
 
@@ -123,12 +125,12 @@ class Cryomodule(Container):
 
 
 class Cavity(Container):
-    def __init__(self, parent, cavNumber):
+    def __init__(self, cryMod, cavNumber):
         # type: (Cryomodule, int) -> None
 
-        super(Cavity, self).__init__(parent.cryModNumSLAC,
-                                     parent.cryModNumJLAB)
-        self.parent = parent
+        super(Cavity, self).__init__(cryMod.cryModNumSLAC,
+                                     cryMod.cryModNumJLAB)
+        self.parent = cryMod
 
         self.name = "Cavity {cavNum}".format(cavNum=cavNumber)
         self.cavNum = cavNumber
@@ -153,8 +155,14 @@ class Cavity(Container):
 
 
     def addDataSession(self, startTime, endTime, timeInt, refValvePos,
-                       refHeatLoad, refGradVal=None, calibSession=None):
+                       refHeatLoad=None, refGradVal=None, calibSession=None):
         # type: (datetime, datetime, int, float, float, float, DataSession) -> DataSession
+
+        if not refHeatLoad:
+            refHeatLoad = 0
+            for heaterActPV in self.heaterActPVs:
+                refHeatLoad += float(cagetPV(heaterActPV))
+
         session = Q0DataSession(self, startTime, endTime, timeInt, refValvePos,
                                 refHeatLoad, refGradVal, calibSession)
         self.dataSessions[hash(session)] = session
@@ -162,6 +170,56 @@ class Cavity(Container):
 
 
 class DataSession(object):
+
+    def __init__(self, container, startTime, endTime, timeInt, refValvePos,
+                 refHeatLoad):
+        # type: (Container, datetime, datetime, int, float, float) -> None
+        self.container = container
+
+        # e.g. calib_CM12_2019-02-25--11-25_18672.csv
+        self.fileNameFormatter = "data/calib_{cryoMod}{suff}"
+
+        self._dataFileName = None
+        self._numPoints = None
+        self.refValvePos = refValvePos
+        self.refHeatLoad = refHeatLoad
+        self.timeInt = timeInt
+        self.startTime = startTime
+        self.endTime = endTime
+
+        self.unixTimeBuff = []
+        self.timeBuff = []
+        self.valvePosBuff = []
+        self.dsLevelBuff = []
+        self.usLevelBuff = []
+        self.gradBuff = []
+        self.dsPressBuff = []
+        self.elecHeatDesBuff = []
+        self.elecHeatActBuff = []
+
+        self.pvBuffMap = {container.valvePV: self.valvePosBuff,
+                          container.dsLevelPV: self.dsLevelBuff,
+                          container.usLevelPV: self.usLevelBuff}
+
+        self.calibSlope = None
+        self.calibIntercept = None
+
+        self.delta = 0
+
+        self.liquidVsTimeAxis = None
+        self.heaterCalibAxis = None
+
+        self.runs = []
+
+    def __hash__(self):
+        return self.hash(self.startTime, self.endTime, self.timeInt,
+                         self.container.cryModNumSLAC,
+                         self.container.cryModNumJLAB)
+
+    def __str__(self):
+        return ("{START} to {END} ({RATE}s sample interval)"
+                .format(START=self.startTime, END=self.endTime,
+                        RATE=self.timeInt))
 
     ############################################################################
     # getArchiveData runs a shell command to get archive data. The syntax we're
@@ -253,54 +311,10 @@ class DataSession(object):
         self.runs.append(DataRun(startIdx, endIdx, self, len(self.runs) + 1))
 
     @staticmethod
-    def hash(startTime, endTime, timeInt, slacNum, jlabNum):
+    def hash(startTime, endTime, timeInt, slacNum, jlabNum, calibSession=None,
+             refGradVal=None):
         return (hash(startTime) ^ hash(endTime) ^ hash(timeInt) ^ hash(slacNum)
                 ^ hash(jlabNum))
-
-    def __hash__(self):
-        return self.hash(self.startTime, self.endTime, self.timeInt,
-                         self.container.cryModNumSLAC,
-                         self.container.cryModNumJLAB)
-
-    def __init__(self, container, startTime, endTime, timeInt, refValvePos,
-                 refHeatLoad):
-        # type: (Container, datetime, datetime, int, float, float) -> None
-        self.container = container
-
-        # e.g. calib_CM12_2019-02-25--11-25_18672.csv
-        self.fileNameFormatter = "data/calib_{cryoMod}{suff}"
-
-        self._dataFileName = None
-        self._numPoints = None
-        self.refValvePos = refValvePos
-        self.refHeatLoad = refHeatLoad
-        self.timeInt = timeInt
-        self.startTime = startTime
-        self.endTime = endTime
-
-        self.unixTimeBuff = []
-        self.timeBuff = []
-        self.valvePosBuff = []
-        self.dsLevelBuff = []
-        self.usLevelBuff = []
-        self.gradBuff = []
-        self.dsPressBuff = []
-        self.elecHeatDesBuff = []
-        self.elecHeatActBuff = []
-
-        self.pvBuffMap = {container.valvePV: self.valvePosBuff,
-                          container.dsLevelPV: self.dsLevelBuff,
-                          container.usLevelPV: self.usLevelBuff}
-
-        self.calibSlope = None
-        self.calibIntercept = None
-
-        self.delta = 0
-
-        self.liquidVsTimeAxis = None
-        self.heaterCalibAxis = None
-
-        self.runs = []
 
     @property
     def numPoints(self):
@@ -330,6 +344,7 @@ class DataSession(object):
         return self._dataFileName
 
     def processData(self):
+
         self.parseDataFromCSV()
         self.populateRuns()
 
@@ -437,16 +452,6 @@ class DataSession(object):
                 print(runStr.format(runNum=(i + 1),
                                     duration=((endTime - startTime) / 60.0)))
 
-    # Approximates the expected heat load on a cavity from its RF gradient. A
-    # cavity with the design Q of 2.7E10 should produce about 9.6 W of heat with
-    # a gradient of 16 MV/m. The heat scales quadratically with the gradient. We
-    # don't know the correct Q yet when we call this function so we assume the
-    # design values.
-    def approxHeatFromGrad(self, grad):
-        # Gradients < 0 are non-physical so assume no heat load in that case.
-        # The gradient values we're working with are readbacks from cavity
-        # gradient PVs so it's possible that they could go negative.
-        return ((grad / 16) ** 2) * 9.6 if grad > 0 else 0
 
     ############################################################################
     # adjustForSettle cuts off data that's corrupted because the heat load on
@@ -504,7 +509,8 @@ class DataSession(object):
             return self.fileName
 
         csvReader = DataSession.parseRawData(self.startTime, self.numPoints,
-                                 self.container.getPVs(), self.timeInt)
+                                             self.container.getPVs(),
+                                             self.timeInt)
 
         if not csvReader:
             return None
@@ -737,6 +743,19 @@ class Q0DataSession(DataSession):
                 print(runStr.format(runNum=(i + 1),
                                     duration=((endTime - startTime) / 60.0)))
 
+    @staticmethod
+    def hash(startTime, endTime, timeInt, slacNum, jlabNum, calibSession=None,
+             refGradVal=None):
+        return (hash(startTime) ^ hash(endTime) ^ hash(timeInt) ^ hash(slacNum)
+                ^ hash(jlabNum) ^ hash(calibSession) ^ hash(refGradVal))
+
+
+    def __hash__(self):
+        return self.hash(self.startTime, self.endTime, self.timeInt,
+                         self.container.cryModNumSLAC,
+                         self.container.cryModNumJLAB, self.calibSession,
+                         self.refGradVal)
+
     def __init__(self, container, startTime, endTime, timeInt, refValvePos,
                  refHeatLoad, refGradVal, calibSession):
         # type: (Cavity, datetime, datetime, int, float, float, float, DataSession) -> None
@@ -774,6 +793,18 @@ class Q0DataSession(DataSession):
                             or gradChanged)
 
             runStartIdx = self.checkAndFlushRun(isEndOfQ0Run, idx, runStartIdx)
+
+    # Approximates the expected heat load on a cavity from its RF gradient. A
+    # cavity with the design Q of 2.7E10 should produce about 9.6 W of heat with
+    # a gradient of 16 MV/m. The heat scales quadratically with the gradient. We
+    # don't know the correct Q yet when we call this function so we assume the
+    # design values.
+    @staticmethod
+    def approxHeatFromGrad(grad):
+        # Gradients < 0 are non-physical so assume no heat load in that case.
+        # The gradient values we're working with are readbacks from cavity
+        # gradient PVs so it's possible that they could go negative.
+        return ((grad / 16) ** 2) * 9.6 if grad > 0 else 0
 
     def adjustForSettle(self):
 

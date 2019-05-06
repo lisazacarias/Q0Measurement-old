@@ -5,6 +5,8 @@
 ################################################################################
 
 from __future__ import division, print_function
+
+from collections import OrderedDict
 from datetime import datetime
 from json import dumps
 from csv import reader
@@ -20,6 +22,8 @@ from cryomodule import (Cryomodule, Container, Cavity, DataSession,
                         MYSAMPLER_TIME_INTERVAL, Q0DataSession)
 
 # Used in custom input functions just below
+from epicsShell import cagetPV
+
 ERROR_MESSAGE = "Please provide valid input"
 
 # Trying to make this compatible with both 2.7 and 3 (input in 3 is the same as
@@ -125,10 +129,11 @@ def parseInputFile(inputFile):
 
     calIdxKeys = baseIdxKeys + [("jlabNumIdx", "JLAB Number")]
 
+    figStartIdx = 1
+
     if "Adv" in inputFile or "Demo" in inputFile:
         cryModFileIdx = header.index("Calibration Index")
 
-        figStartIdx = 1
         for row in csvReader:
             slacNum = int(row[slacNumIdx])
             calibIdx = int(row[cryModFileIdx])
@@ -143,6 +148,7 @@ def parseInputFile(inputFile):
 
                 dataSessions[slacNum] = {calibIdx: sessionCalib}
                 cryoModules[slacNum] = sessionCalib.container
+                sessionCalib.generateCSV()
                 sessionCalib.processData()
 
             else:
@@ -151,6 +157,7 @@ def parseInputFile(inputFile):
                                              cryModIdxMap[slacNum], slacNum,
                                              calibIdx, cryoModules[slacNum])
                     dataSessions[slacNum] = {calibIdx: sessionCalib}
+                    sessionCalib.generateCSV()
                     sessionCalib.processData()
 
                 sessionCalib = dataSessions[slacNum][calibIdx]
@@ -193,80 +200,99 @@ def parseInputFile(inputFile):
                                                             FIG=i))
             figStartIdx = lastFigNum
 
-    plt.draw()
-    plt.show()
+        plt.draw()
+        plt.show()
 
-    # else:
-    #     for row in csvReader:
-    #         slacNum = int(row[slacNumIdx])
-    #
-    #         print("---- CM{CM} ----".format(CM=slacNum))
-    #
-    #         if slacNum in dataSessions:
-    #             # TODO make more intuitive
-    #             reuseCalibration = (getStrLim("Reuse previous calibration?"
-    #                                           " (y/n): ", ["y", "n", "Y", "N"])
-    #                                 in ["y", "Y"])
-    #
-    #             if not reuseCalibration:
-    #                 # TODO cryModIdxMap or cryModIdxMap[slacNum]?
-    #                 addDataFile("calibrationsCM{CM_SLAC}.csv",
-    #                             cryModIdxMap[slacNum], slacNum,
-    #                             cryoModules=dataSessions)
-    #
-    #         else:
-    #             populateIdxMap("calibrationsCM{CM_SLAC}.csv", cryModIdxMap,
-    #                            calIdxKeys, slacNum)
-    #
-    #             addDataFile("calibrationsCM{CM_SLAC}.csv",
-    #                         cryModIdxMap[slacNum],
-    #                         slacNum, cryoModules=dataSessions)
-    #
-    #         for _, cavity in dataSessions[slacNum].cavities.items():
-    #             cavGradIdx = header.index("Cavity {NUM} Gradient"
-    #                                       .format(NUM=cavity.cavNum))
-    #
-    #             try:
-    #                 gradDes = float(row[cavGradIdx])
-    #
-    #                 print("\n---- Cavity {CAV} @ {GRAD} MV/m ----"
-    #                       .format(CM=slacNum, CAV=cavity.cavNum, GRAD=gradDes))
-    #
-    #                 if not cavity.dataFileName:
-    #                     populateIdxMap("q0MeasurementsCM{CM_SLAC}.csv",
-    #                                    cavIdxMap,
-    #                                    cavIdxKeys, slacNum)
-    #                     addDataFile("q0MeasurementsCM{CM_SLAC}.csv",
-    #                                 cavIdxMap[slacNum], slacNum, cavity=cavity)
-    #
-    #                 else:
-    #                     reuseQ0Measurement = (getStrLim("Reuse previous Q0"
-    #                                                       " Measurement? (y/n): ",
-    #                                                     ["y", "n", "Y", "N"])
-    #                                           in ["y", "Y"])
-    #                     if not reuseQ0Measurement:
-    #                         addDataFile("q0MeasurementsCM{CM_SLAC}.csv",
-    #                                     cavIdxMap[slacNum], slacNum,
-    #                                     cavity=cavity)
-    #
-    #                 cavity.refGradVal = gradDes
-    #
-    #             except ValueError:
-    #                 pass
-    #
-    #     for _, cryoModule in dataSessions.items():
-    #
-    #         print("\n---------- {CM} ----------\n".format(CM=cryoModule.name))
-    #         calibCurveAxis = processData(cryoModule)
-    #
-    #         for _, cavity in cryoModule.cavities.items():
-    #             if cavity.dataFileName:
-    #                 print("\n----------  {CM} {CAV} ----------\n"
-    #                       .format(CM=cryoModule.name, CAV=cavity.name))
-    #                 processData(cavity)
-    #                 cavity.printReport()
-    #
-    #                 updateCalibCurve(calibCurveAxis, cavity, cryoModule)
+    else:
+        for row in csvReader:
+            slacNum = int(row[slacNumIdx])
+
+            print("---- CM{CM} ----".format(CM=slacNum))
+
+            if slacNum in cryoModules:
+                options = {}
+                idx = 1
+                idx2session = {}
+
+                for _, dataSession in cryoModules[slacNum].dataSessions.items():
+                    options[idx] = str(dataSession)
+                    idx2session[idx] = dataSession
+                    idx += 1
+
+                options[idx] = "Use a different calibration"
+                printOptions(options)
+
+                selection = getNumInputFromLst(("Please select a calibration"
+                                                " option: "), options.keys(),
+                                               int)
+
+                reuseCalibration = (selection != max(options))
+
+                if not reuseCalibration:
+                    # TODO cryModIdxMap or cryModIdxMap[slacNum]?
+                    # refHeatLoad = cagetPV()
+                    sessionCalib = addDataFile("calibrationsCM{CM_SLAC}.csv",
+                                               cryModIdxMap[slacNum], slacNum,
+                                               cryoModules[slacNum])
+                    sessionCalib.generateCSV()
+                    sessionCalib.processData()
+                else:
+                    sessionCalib = idx2session[selection]
+
+            else:
+                populateIdxMap("calibrationsCM{CM_SLAC}.csv", cryModIdxMap,
+                               calIdxKeys, slacNum)
+
+                sessionCalib = addDataFile("calibrationsCM{CM_SLAC}.csv",
+                                           cryModIdxMap[slacNum], slacNum, None)
+
+                cryoModules[slacNum] = sessionCalib.container
+                sessionCalib.generateCSV()
+                sessionCalib.processData()
+
+            cryoModule = cryoModules[slacNum]
+
+            for _, cavity in cryoModule.cavities.items():
+                cavGradIdx = header.index("Cavity {NUM} Gradient"
+                                          .format(NUM=cavity.cavNum))
+
+                try:
+                    gradDes = float(row[cavGradIdx])
+
+                    print("\n---- Cavity {CAV} @ {GRAD} MV/m ----"
+                          .format(CM=slacNum, CAV=cavity.cavNum, GRAD=gradDes))
+
+                    if slacNum not in cavIdxMap:
+                        populateIdxMap("q0MeasurementsCM{CM_SLAC}.csv",
+                                       cavIdxMap, cavIdxKeys, slacNum)
+
+                    sessionQ0 = addDataFile("q0MeasurementsCM{CM_SLAC}.csv",
+                                            cavIdxMap[slacNum], slacNum,
+                                            cavity, gradDes, sessionCalib)
+
+                    sessionQ0.generateCSV()
+                    sessionQ0.processData()
+
+                    print("\n---------- {CM} {CAV} ----------\n"
+                          .format(CM=cryoModule.name, CAV=cavity.name))
+                    sessionQ0.printReport()
+
+                    updateCalibCurve(sessionCalib.heaterCalibAxis, sessionQ0,
+                                     sessionCalib)
+
+                # If blank
+                except ValueError:
+                    pass
+
+            lastFigNum = len(plt.get_fignums()) + 1
+            for i in range(figStartIdx, lastFigNum):
+                plt.figure(i)
+                plt.savefig("figures/{CM}_{FIG}.png".format(CM=cryoModule.name,
+                                                            FIG=i))
+            figStartIdx = lastFigNum
+
+        plt.draw()
+        plt.show()
 
 
 def updateCalibCurve(calibCurveAxis, q0Session, calibSession):
@@ -297,6 +323,132 @@ def updateCalibCurve(calibCurveAxis, q0Session, calibSession):
                                      + calibSession.calibIntercept
                                      for i in yRange])
 
+def printOptions(options):
+    print(("\n" + dumps(options, indent=4) + "\n")
+          .replace('"', '').replace(',', ''))
+
+
+def addDataFile(fileFormatter, indices, slacNum, container,
+                refGradVal=None, calibSession=None):
+    # type: (str, dict, int, Container, float, DataSession) -> DataSession
+
+    def addOption(row, lineNum):
+        startTime = datetime.strptime(row[startIdx], "%m/%d/%y %H:%M")
+        endTime = datetime.strptime(row[endIdx], "%m/%d/%y %H:%M")
+        rate = row[indices["timeIntIdx"]]
+        options[lineNum] = ("{START} to {END} ({RATE}s sample interval)"
+                            .format(START=startTime, END=endTime,
+                                    RATE=rate))
+
+    def getSelection(duration, suffix):
+        options[max(options) + 1] = ("Launch new {TYPE} ({DUR} hours)"
+                                     .format(TYPE=suffix, DUR=duration))
+        printOptions(options)
+        return getNumInputFromLst(("Please select a {TYPE} option: "
+                                        .format(TYPE=suffix)), options.keys(),
+                                       int)
+
+    file = fileFormatter.format(CM_SLAC=slacNum)
+    rows = open(file).readlines()
+    rows.reverse()
+    reader([rows.pop()]).next()
+
+    fileReader = reader(rows)
+    options = OrderedDict()
+
+    startIdx = indices["startIdx"]
+    endIdx = indices["endIdx"]
+    heatIdx = indices["refHeatIdx"]
+    jtIdx = indices["jtIdx"]
+
+    if isinstance(container, Cavity):
+        for row in fileReader:
+
+            if (len(options) + 1) % 10 == 0:
+                printOptions(options)
+                showMore = (getStrLim("Search for more options? ",
+                                      ["y", "n", "Y", "N"]) in ["y", "Y"])
+                if not showMore:
+                    break
+
+            grad = float(row[indices["gradIdx"]])
+            cavNum = int(row[indices["cavNumIdx"]])
+
+            if (grad != refGradVal) or (cavNum != container.cavNum):
+                continue
+
+            addOption(row, fileReader.line_num)
+
+        selection = getSelection(2, "Q0 Measurement")
+
+        if selection != max(options):
+            selectedRow = reader([rows[selection - 1]]).next()
+
+            startTime = datetime.strptime(selectedRow[startIdx],
+                                          "%m/%d/%y %H:%M")
+            endTime = datetime.strptime(selectedRow[endIdx], "%m/%d/%y %H:%M")
+
+            timeIntervalStr = selectedRow[indices["timeIntIdx"]]
+
+            timeInterval = (int(timeIntervalStr) if timeIntervalStr
+                            else MYSAMPLER_TIME_INTERVAL)
+
+            try:
+                refHeatLoad = float(selectedRow[heatIdx])
+            except ValueError:
+                refHeatLoad = calibSession.refHeatLoad
+
+            # refGradVal = float(selectedRow[indices["gradIdx"]])
+
+            return container.addDataSession(startTime, endTime, timeInterval,
+                                            float(selectedRow[jtIdx]),
+                                            refHeatLoad, refGradVal,
+                                            calibSession)
+
+        else:
+            # TODO launch new Q0 Measurement
+            pass
+
+    else:
+        for row in fileReader:
+
+            if (len(options) + 1) % 10 == 0:
+                printOptions(options)
+                showMore = (getStrLim("Search for more options? ",
+                                        ["y", "n", "Y", "N"]) in ["y", "Y"])
+                if not showMore:
+                    break
+
+            addOption(row, fileReader.line_num)
+
+        selection = getSelection(5, "calibration")
+
+        if selection != max(options):
+
+            calibRow = reader([rows[selection - 1]]).next()
+
+            startTime = datetime.strptime(calibRow[startIdx],
+                                          "%m/%d/%y %H:%M")
+            endTime = datetime.strptime(calibRow[endIdx], "%m/%d/%y %H:%M")
+
+            timeIntervalStr = calibRow[indices["timeIntIdx"]]
+
+            timeInterval = (int(timeIntervalStr) if timeIntervalStr
+                            else MYSAMPLER_TIME_INTERVAL)
+
+            refHeatLoad = float(calibRow[heatIdx])
+
+            refValvePos = float(calibRow[jtIdx])
+
+            if not container:
+                container = Cryomodule(slacNum, calibRow[indices["jlabNumIdx"]])
+
+            return container.addDataSession(startTime, endTime, timeInterval,
+                                            refValvePos, refHeatLoad)
+
+        else:
+            # TODO launch new calibration
+            pass
 
 def addDataFileAdv(fileFormatter, indices, slacNum, idx, container,
                    sessionCalib=None):
@@ -358,10 +510,4 @@ def populateIdxMap(fileFormatter, idxMap, idxkeys, slacNum):
 
 
 if __name__ == "__main__":
-    # if IS_DEMO:
-    #     parseAdvInputFile("inputDemo.csv")
-    #
-    # else:
-    #     parseBasicInputFile("input.csv")
-
-    parseInputFile("inputDemo.csv")
+    parseInputFile("input.csv")

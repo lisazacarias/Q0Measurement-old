@@ -68,3 +68,4 @@ if __name__ == "__main__":
     if heatLoads[0] > headroom:
         delta = ceil(heatLoads[0] / 8)
         for i in range(1, 9):
+            pass
